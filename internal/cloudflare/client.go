@@ -49,7 +49,9 @@ func NewClient(zoneID, token string) *Client {
 
 func (c *Client) ListRecords(ctx context.Context, recordType, name string) ([]Record, error) {
 	query := url.Values{}
-	query.Set("type", recordType)
+	if recordType != "" {
+		query.Set("type", recordType)
+	}
 	query.Set("name", name)
 	path := fmt.Sprintf("/zones/%s/dns_records?%s", c.ZoneID, query.Encode())
 	body, err := c.do(ctx, http.MethodGet, path, nil)
@@ -61,6 +63,11 @@ func (c *Client) ListRecords(ctx context.Context, recordType, name string) ([]Re
 		return nil, err
 	}
 	return records, nil
+}
+
+func (c *Client) DeleteRecord(ctx context.Context, record Record) error {
+	_, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/zones/%s/dns_records/%s", c.ZoneID, record.ID), nil)
+	return err
 }
 
 func (c *Client) CreateRecord(ctx context.Context, record Record) error {

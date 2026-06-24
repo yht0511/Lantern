@@ -113,9 +113,22 @@ func Sync(ctx context.Context, cfg *model.Config, secrets *model.Secrets, opts S
 			continue
 		}
 		client := cloudflare.NewClient(zoneID, token)
-		current, err := client.ListRecords(ctx, desired.Type, desired.Name)
+		allCurrent, err := client.ListRecords(ctx, "", desired.Name)
 		if err != nil {
 			return result, err
+		}
+		current, conflicts := splitRecords(allCurrent, desired.Type)
+		if len(conflicts) > 0 {
+			if !opts.Force {
+				result.Diagnostics = append(result.Diagnostics, planner.Diagnostic{Severity: planner.SeverityError, Message: fmt.Sprintf("record %s conflicts with existing %s; rerun with --force to delete conflicting A/AAAA/CNAME records first", describeRecord(desired), describeRecords(conflicts))})
+				continue
+			}
+			for _, conflict := range conflicts {
+				if err := client.DeleteRecord(ctx, conflict); err != nil {
+					return result, err
+				}
+				result.Actions = append(result.Actions, planner.Action{Kind: "dns", Operation: "delete", Target: conflict.Name, Details: conflict.Type + " " + conflict.Content})
+			}
 		}
 		switch len(current) {
 		case 0:
@@ -149,6 +162,42 @@ func Sync(ctx context.Context, cfg *model.Config, secrets *model.Secrets, opts S
 		}
 	}
 	return result, nil
+}
+
+func splitRecords(records []cloudflare.Record, desiredType string) ([]cloudflare.Record, []cloudflare.Record) {
+	var same []cloudflare.Record
+	var conflicts []cloudflare.Record
+	for _, record := range records {
+		if strings.EqualFold(record.Type, desiredType) {
+			same = append(same, record)
+			continue
+		}
+		if isAddressOrCNAME(record.Type) && isAddressOrCNAME(desiredType) {
+			conflicts = append(conflicts, record)
+		}
+	}
+	return same, conflicts
+}
+
+func isAddressOrCNAME(recordType string) bool {
+	switch strings.ToUpper(recordType) {
+	case "A", "AAAA", "CNAME":
+		return true
+	default:
+		return false
+	}
+}
+
+func describeRecord(record DesiredRecord) string {
+	return record.Type + " " + record.Name
+}
+
+func describeRecords(records []cloudflare.Record) string {
+	parts := make([]string, 0, len(records))
+	for _, record := range records {
+		parts = append(parts, record.Type+" "+record.Name)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func cloudflareZoneID(zone model.Domain, secrets *model.Secrets) string {
