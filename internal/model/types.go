@@ -28,13 +28,13 @@ type NginxSettings struct {
 }
 
 type ACMESettings struct {
-	Enabled     bool
-	Provider    string
-	Email       string
-	CertDir     string
-	ACMEShPath  string
-	ACMEShECC   bool
-	ACMEShDNS   string
+	Enabled      bool
+	Provider     string
+	Email        string
+	CertDir      string
+	ACMEShPath   string
+	ACMEShECC    bool
+	ACMEShDNS    string
 	ACMEShServer string
 }
 
@@ -228,10 +228,10 @@ func ExampleConfig() *Config {
 				ReloadCommand: "systemctl reload nginx",
 			},
 			ACME: ACMESettings{
-				Enabled:  false,
-				Provider: "lego",
-				Email:    "admin@example.com",
-				CertDir:  ".lantern/certs",
+				Enabled:    false,
+				Provider:   "lego",
+				Email:      "admin@example.com",
+				CertDir:    ".lantern/certs",
 				ACMEShPath: "/root/.acme.sh/acme.sh",
 				ACMEShDNS:  "dns_cf",
 			},

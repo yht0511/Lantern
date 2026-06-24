@@ -14,20 +14,20 @@ import (
 )
 
 type Certificate struct {
-	Name      string
-	Domains   []string
-	Zone      model.Domain
-	TokenRef  string
-	CertDir   string
-	CertFile  string
-	KeyFile   string
-	Provider  string
-	Email     string
-	ACMEShPath string
-	ACMEShDNS  string
-	ACMEShECC  bool
+	Name         string
+	Domains      []string
+	Zone         model.Domain
+	TokenRef     string
+	CertDir      string
+	CertFile     string
+	KeyFile      string
+	Provider     string
+	Email        string
+	ACMEShPath   string
+	ACMEShDNS    string
+	ACMEShECC    bool
 	ACMEShServer string
-	IssueArgs []string
+	IssueArgs    []string
 }
 
 func DesiredCertificates(cfg *model.Config) ([]Certificate, []planner.Diagnostic) {
@@ -55,14 +55,11 @@ func DesiredCertificates(cfg *model.Config) ([]Certificate, []planner.Diagnostic
 
 	var certs []Certificate
 	for name, hosts := range certHosts {
-		domains := make([]string, 0, len(hosts))
-		for host := range hosts {
-			domains = append(domains, host)
-		}
-		sort.Strings(domains)
-		zone, ok := longestMatchingZone(domains[0], zones)
+		zoneHost := firstHost(hosts)
+		domains := domainsForCertificate(name, hosts)
+		zone, ok := longestMatchingZone(zoneHost, zones)
 		if !ok {
-			diagnostics = append(diagnostics, planner.Diagnostic{Severity: planner.SeverityError, Message: fmt.Sprintf("certificate %q has no matching zone for %s", name, domains[0])})
+			diagnostics = append(diagnostics, planner.Diagnostic{Severity: planner.SeverityError, Message: fmt.Sprintf("certificate %q has no matching zone for %s", name, zoneHost)})
 			continue
 		}
 		if !zone.AllowACME {
@@ -116,6 +113,18 @@ func NginxCertificateFiles(cfg *model.Config, binding model.Binding) (string, st
 	return filesForProvider(cfg.Settings.ACME.Provider, certDirFor(cfg.Settings.ACME, certName), mainDomain)
 }
 
+func firstHost(hosts map[string]bool) string {
+	domains := make([]string, 0, len(hosts))
+	for host := range hosts {
+		domains = append(domains, host)
+	}
+	sort.Strings(domains)
+	if len(domains) == 0 {
+		return ""
+	}
+	return domains[0]
+}
+
 func certDirFor(settings model.ACMESettings, certName string) string {
 	if settings.Provider == "acme.sh" {
 		name := certName
@@ -125,6 +134,43 @@ func certDirFor(settings model.ACMESettings, certName string) string {
 		return filepath.Join(settings.CertDir, name)
 	}
 	return filepath.Join(settings.CertDir, safeName(certName))
+}
+
+func domainsForCertificate(certName string, hosts map[string]bool) []string {
+	domains := make([]string, 0, len(hosts))
+	for host := range hosts {
+		domains = append(domains, host)
+	}
+	sort.Strings(domains)
+	if certName == "" || !canUseWildcardCertificate(certName, domains) {
+		return domains
+	}
+	if len(domains) == 1 && strings.EqualFold(strings.TrimSuffix(domains[0], "."), strings.TrimSuffix(certName, ".")) {
+		return []string{certName}
+	}
+	return []string{certName, "*." + certName}
+}
+
+func canUseWildcardCertificate(certName string, domains []string) bool {
+	root := strings.TrimSuffix(strings.ToLower(certName), ".")
+	if root == "" {
+		return false
+	}
+	for _, domain := range domains {
+		name := strings.TrimSuffix(strings.ToLower(domain), ".")
+		if name == root {
+			continue
+		}
+		suffix := "." + root
+		if !strings.HasSuffix(name, suffix) {
+			return false
+		}
+		prefix := strings.TrimSuffix(name, suffix)
+		if prefix == "" || strings.Contains(prefix, ".") {
+			return false
+		}
+	}
+	return true
 }
 
 func filesForProvider(provider, certDir, mainDomain string) (string, string) {
@@ -167,7 +213,7 @@ func legoIssueArgs(cert Certificate) []string {
 
 func RenewArgs(cert Certificate) []string {
 	if cert.Provider == "acme.sh" {
-		return acmeShArgs(cert, "--renew")
+		return acmeShRenewArgs(cert)
 	}
 	args := []string{
 		"--accept-tos",
@@ -196,6 +242,17 @@ func acmeShArgs(cert Certificate, mode string) []string {
 	}
 	if cert.Email != "" {
 		args = append(args, "--accountemail", cert.Email)
+	}
+	if cert.ACMEShServer != "" {
+		args = append(args, "--server", cert.ACMEShServer)
+	}
+	return args
+}
+
+func acmeShRenewArgs(cert Certificate) []string {
+	args := []string{"--renew", "-d", cert.Name}
+	if cert.ACMEShECC {
+		args = append(args, "--ecc")
 	}
 	if cert.ACMEShServer != "" {
 		args = append(args, "--server", cert.ACMEShServer)
@@ -266,7 +323,7 @@ func shellQuote(s string) string {
 	if s == "" {
 		return "''"
 	}
-	if !strings.ContainsAny(s, " \t\n'\"$`\\") {
+	if !strings.ContainsAny(s, " \t\n'\"$`\\*?[]") {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"

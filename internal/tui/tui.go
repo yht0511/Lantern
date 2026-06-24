@@ -689,15 +689,23 @@ func (a *app) editSettings(idx int) {
 	case 2:
 		fields := []field{
 			boolField("Enable ACME", a.cfg.Settings.ACME.Enabled),
-			choiceField("Provider", a.cfg.Settings.ACME.Provider, []string{"lego"}),
+			choiceField("Provider", a.cfg.Settings.ACME.Provider, []string{"lego", "acme.sh"}),
 			textField("Email", a.cfg.Settings.ACME.Email),
 			textField("Certificate dir", a.cfg.Settings.ACME.CertDir),
+			textField("acme.sh path", a.cfg.Settings.ACME.ACMEShPath),
+			boolField("acme.sh ECC", a.cfg.Settings.ACME.ACMEShECC),
+			textField("acme.sh DNS", a.cfg.Settings.ACME.ACMEShDNS),
+			textField("acme.sh server", a.cfg.Settings.ACME.ACMEShServer),
 		}
 		if editForm("ACME Settings", fields) {
 			a.cfg.Settings.ACME.Enabled = parseBool(fields[0].value)
 			a.cfg.Settings.ACME.Provider = fields[1].value
 			a.cfg.Settings.ACME.Email = fields[2].value
 			a.cfg.Settings.ACME.CertDir = fields[3].value
+			a.cfg.Settings.ACME.ACMEShPath = fields[4].value
+			a.cfg.Settings.ACME.ACMEShECC = parseBool(fields[5].value)
+			a.cfg.Settings.ACME.ACMEShDNS = fields[6].value
+			a.cfg.Settings.ACME.ACMEShServer = fields[7].value
 			a.markDirty("Updated ACME settings")
 		}
 	case 3:
