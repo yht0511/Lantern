@@ -35,3 +35,33 @@ frp_tokens:
 		t.Fatalf("cloudflare zone = %q", got)
 	}
 }
+
+func TestDecodeServiceNormalizesLegacyBoolOptions(t *testing.T) {
+	root, err := parseYAML([]byte(`
+services:
+  - name: pve
+    protocol: https
+    host: 192.168.1.2
+    port: 8006
+    options:
+      backend_tls_verify: false
+      buffering: false
+      request_buffering: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := decodeConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Services[0].Options.BackendTLSVerify; got != "off" {
+		t.Fatalf("backend_tls_verify = %q", got)
+	}
+	if got := cfg.Services[0].Options.Buffering; got != "off" {
+		t.Fatalf("buffering = %q", got)
+	}
+	if got := cfg.Services[0].Options.RequestBuffering; got != "on" {
+		t.Fatalf("request_buffering = %q", got)
+	}
+}

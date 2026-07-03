@@ -169,15 +169,38 @@ func decodeService(m map[string]any) model.Service {
 	if options, ok := mapValue(m["options"]); ok {
 		s.Options = model.ServiceOptions{
 			Websocket:         boolValue(options["websocket"]),
-			BackendTLSVerify:  stringValue(options["backend_tls_verify"]),
+			BackendTLSVerify:  onOffValue(options["backend_tls_verify"]),
 			ConnectTimeout:    stringValue(options["connect_timeout"]),
 			SendTimeout:       stringValue(options["send_timeout"]),
 			ReadTimeout:       stringValue(options["read_timeout"]),
 			ClientMaxBodySize: stringValue(options["client_max_body_size"]),
-			Buffering:         stringValue(options["buffering"]),
-			RequestBuffering:  stringValue(options["request_buffering"]),
+			Buffering:         onOffDefaultValue(options["buffering"]),
+			RequestBuffering:  onOffDefaultValue(options["request_buffering"]),
 			RangeMode:         stringValue(options["range_mode"]),
 		}
+	}
+	return s
+}
+
+func onOffValue(v any) string {
+	s := stringValue(v)
+	switch s {
+	case "true":
+		return "on"
+	case "false":
+		return "off"
+	default:
+		return s
+	}
+}
+
+func onOffDefaultValue(v any) string {
+	s := onOffValue(v)
+	if s == "" {
+		return s
+	}
+	if s != "on" && s != "off" && s != "default" {
+		return stringValue(v)
 	}
 	return s
 }
