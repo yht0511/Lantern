@@ -14,6 +14,7 @@ func Generate(cfg *model.Config) (map[string]string, error) {
 	cfg.ApplyDefaults()
 	files := map[string]string{}
 	services := mapServices(cfg)
+	needsWebsocketMap := false
 	for _, binding := range cfg.Bindings {
 		if binding.Disabled {
 			continue
@@ -25,10 +26,26 @@ func Generate(cfg *model.Config) (map[string]string, error) {
 		if service.Protocol != "http" && service.Protocol != "https" {
 			continue
 		}
+		if service.Options.Websocket {
+			needsWebsocketMap = true
+		}
 		name := safeName(binding.Hostname) + ".conf"
 		files[filepath.Join(cfg.Settings.Nginx.GeneratedDir, name)] = renderServer(cfg, service, binding)
 	}
+	if needsWebsocketMap {
+		files[filepath.Join(cfg.Settings.Nginx.GeneratedDir, "00_lantern_websocket_map.conf")] = renderWebsocketMap(cfg)
+	}
 	return files, nil
+}
+
+func renderWebsocketMap(cfg *model.Config) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s\n", cfg.Settings.GeneratedByTag)
+	fmt.Fprintf(&b, "map $http_upgrade $connection_upgrade {\n")
+	fmt.Fprintf(&b, "    default upgrade;\n")
+	fmt.Fprintf(&b, "    '' close;\n")
+	fmt.Fprintf(&b, "}\n")
+	return b.String()
 }
 
 func renderServer(cfg *model.Config, service model.Service, binding model.Binding) string {
@@ -70,7 +87,7 @@ func renderServer(cfg *model.Config, service model.Service, binding model.Bindin
 	fmt.Fprintf(&b, "        proxy_http_version 1.1;\n")
 	if service.Options.Websocket {
 		fmt.Fprintf(&b, "        proxy_set_header Upgrade $http_upgrade;\n")
-		fmt.Fprintf(&b, "        proxy_set_header Connection \"upgrade\";\n")
+		fmt.Fprintf(&b, "        proxy_set_header Connection $connection_upgrade;\n")
 	} else {
 		fmt.Fprintf(&b, "        proxy_set_header Connection \"\";\n")
 	}

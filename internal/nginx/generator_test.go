@@ -25,3 +25,26 @@ func TestGenerateNginx(t *testing.T) {
 		t.Fatalf("expected bitshare nginx config, got %#v", files)
 	}
 }
+
+func TestGenerateWebsocketMap(t *testing.T) {
+	cfg := model.ExampleConfig()
+	cfg.Services[0].Options.Websocket = true
+	files, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hasMap bool
+	var hasUpgradeHeader bool
+	for path, body := range files {
+		if strings.HasSuffix(path, "00_lantern_websocket_map.conf") &&
+			strings.Contains(body, "map $http_upgrade $connection_upgrade") {
+			hasMap = true
+		}
+		if strings.Contains(body, "proxy_set_header Connection $connection_upgrade;") {
+			hasUpgradeHeader = true
+		}
+	}
+	if !hasMap || !hasUpgradeHeader {
+		t.Fatalf("missing websocket config: map=%v upgrade=%v files=%#v", hasMap, hasUpgradeHeader, files)
+	}
+}
