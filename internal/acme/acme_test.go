@@ -82,6 +82,27 @@ func TestACMEShRequiresZoneID(t *testing.T) {
 	}
 }
 
+func TestCertificateAcrossCloudflareUsersIsRejected(t *testing.T) {
+	cfg := &model.Config{
+		Settings: model.Settings{ACME: model.ACMESettings{Enabled: true, Provider: "acme.sh"}},
+		Domains: []model.Domain{
+			{Name: "a.example.com", TokenRef: "user_a", ZoneRef: "zone_a", AllowACME: true},
+			{Name: "b.example.com", TokenRef: "user_b", ZoneRef: "zone_b", AllowACME: true},
+		},
+		Bindings: []model.Binding{
+			{Hostname: "a.example.com", CertName: "shared", SSL: true},
+			{Hostname: "b.example.com", CertName: "shared", SSL: true},
+		},
+	}
+	certs, diagnostics := DesiredCertificates(cfg)
+	if len(certs) != 0 {
+		t.Fatalf("expected no certificate with mixed credentials, got %#v", certs)
+	}
+	if len(diagnostics) != 1 || diagnostics[0].Severity != "error" || !strings.Contains(diagnostics[0].Message, "different credentials") {
+		t.Fatalf("expected mixed credentials diagnostic, got %#v", diagnostics)
+	}
+}
+
 func TestACMEShUsesExistingDirectoryLayout(t *testing.T) {
 	cfg := model.ExampleConfig()
 	cfg.Settings.ACME.Enabled = true

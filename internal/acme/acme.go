@@ -80,11 +80,23 @@ func DesiredCertificates(cfg *model.Config) ([]Certificate, []planner.Diagnostic
 
 	var certs []Certificate
 	for name, hosts := range certHosts {
-		zoneHost := firstHost(hosts)
 		domains := domainsForCertificate(name, hosts)
+		zoneHost := strings.TrimPrefix(domains[0], "*.")
 		zone, ok := longestMatchingZone(zoneHost, zones)
 		if !ok {
 			diagnostics = append(diagnostics, planner.Diagnostic{Severity: planner.SeverityError, Message: fmt.Sprintf("certificate %q has no matching zone for %s", name, zoneHost)})
+			continue
+		}
+		mixedZones := false
+		for _, domain := range domains[1:] {
+			otherZone, found := longestMatchingZone(strings.TrimPrefix(domain, "*."), zones)
+			if !found || otherZone.TokenRef != zone.TokenRef || otherZone.ZoneRef != zone.ZoneRef || otherZone.ZoneID != zone.ZoneID {
+				mixedZones = true
+				break
+			}
+		}
+		if mixedZones {
+			diagnostics = append(diagnostics, planner.Diagnostic{Severity: planner.SeverityError, Message: fmt.Sprintf("certificate %q spans Cloudflare zones with different credentials; use separate certificates", name)})
 			continue
 		}
 		if !zone.AllowACME {
@@ -136,18 +148,6 @@ func NginxCertificateFiles(cfg *model.Config, binding model.Binding) (string, st
 		mainDomain = domains[0]
 	}
 	return filesForProvider(cfg.Settings.ACME.Provider, certDirFor(cfg.Settings.ACME, certName), mainDomain)
-}
-
-func firstHost(hosts map[string]bool) string {
-	domains := make([]string, 0, len(hosts))
-	for host := range hosts {
-		domains = append(domains, host)
-	}
-	sort.Strings(domains)
-	if len(domains) == 0 {
-		return ""
-	}
-	return domains[0]
 }
 
 func certDirFor(settings model.ACMESettings, certName string) string {
