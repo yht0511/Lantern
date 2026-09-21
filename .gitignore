@@ -2,5 +2,5 @@
 /lantern
 lantern.yaml
 secrets.yaml
+auth-passwords.txt
 .lantern/
-

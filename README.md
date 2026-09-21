@@ -100,21 +100,35 @@ service for the site-2 deployment. It uses the existing `*.site-2` certificate.
 Keep the listener bound to loopback and prevent direct public access to each
 backend; otherwise clients can bypass the gateway.
 
-Build and install a stable executable on the gateway host. After adding
-`auth_ref` to a binding, set its password interactively on the host that holds
-`secrets.yaml`, then apply the configuration:
+In the site-2 configuration, every HTTP(S) binding unrelated to Bitshare or
+speedtest has its own `auth_ref` (17 bindings). Bitshare, speedtest, the auth
+gateway, and TCP services remain outside this browser login flow. The local
+`secrets.yaml` contains only the generated `auth_passwords` map with Argon2id
+hashes. Merge that map into the existing `/etc/lantern/secrets.yaml` alongside
+its Cloudflare and FRP credentials; do not replace the whole file. The matching
+32-character login passwords are in `auth-passwords.txt`. Both local files are
+gitignored and mode `0600`; keep the plaintext list private.
+
+On the Linux gateway host, place this `lantern.yaml` at a stable absolute path
+such as `/etc/lantern/lantern.yaml`, and merge the generated `auth_passwords`
+mapping into the existing `/etc/lantern/secrets.yaml`. Build and install the
+current Lantern source on that host, then validate and apply:
 
 ```bash
 go build -o lantern ./cmd/lantern
 sudo install -m 0755 lantern /usr/local/bin/lantern
-sudo /usr/local/bin/lantern auth set-password --config lantern.yaml --binding pve-lan
-sudo /usr/local/bin/lantern apply --config lantern.yaml --yes --dns --systemd
+sudo /usr/local/bin/lantern validate --config /etc/lantern/lantern.yaml
+sudo /usr/local/bin/lantern apply --config /etc/lantern/lantern.yaml --yes --dns --systemd
+sudo systemctl status lantern-auth --no-pager
 ```
 
-This saves an Argon2id password hash in `auth_passwords` inside the configured
-secrets file. Passwords are never stored in `lantern.yaml`. Changing a password
-invalidates existing sessions for bindings using its `auth_ref`; restart the
-auth service to load the new hash. Passwords must have at least 12 characters.
+The generated hashes are ready to use; running `auth set-password` is not needed
+for these 17 bindings. To change one password later, run `sudo lantern auth
+set-password --config /etc/lantern/lantern.yaml --binding BINDING_NAME` in an
+interactive terminal. This saves an Argon2id hash in the configured secrets
+file. Changing a password invalidates existing sessions for bindings using its
+`auth_ref`; restart the auth service to load the new hash. Passwords must have
+at least 12 characters.
 
 `--systemd` enables and restarts `lantern-auth.service` when
 `settings.auth.public_url` is configured. The login flow is: password, then
