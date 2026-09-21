@@ -32,16 +32,41 @@ func TestLoginDurationCheckAndLogout(t *testing.T) {
 	}
 	central := "auth.example.test:10043"
 	target := "app.example.test"
-	wrongOrigin := request(t, s, http.MethodPost, "/login", central, url.Values{"binding": {"app-public"}, "password": {"correct horse battery staple"}}, nil, "https://evil.test")
-	if wrongOrigin.Code != http.StatusForbidden {
-		t.Fatalf("wrong origin = %d", wrongOrigin.Code)
+	loginPage := request(t, s, http.MethodGet, "/login?binding=app-public", central, nil, nil, "")
+	csrf := findCookie(t, loginPage, csrfCookie)
+	if !csrf.Secure || !csrf.HttpOnly || csrf.Path != "/" || csrf.Domain != "" {
+		t.Fatalf("invalid CSRF cookie: %#v", csrf)
 	}
-	login := request(t, s, http.MethodPost, "/login", central, url.Values{"binding": {"app-public"}, "password": {"correct horse battery staple"}}, nil, "https://"+central)
+	if !strings.Contains(loginPage.Body.String(), `name="csrf"`) {
+		t.Fatal("login page is missing CSRF field")
+	}
+	forged := request(t, s, http.MethodPost, "/login", central,
+		url.Values{"binding": {"app-public"}, "password": {"correct horse battery staple"}, "csrf": {csrf.Value}}, nil, "https://evil.test")
+	if forged.Code != http.StatusForbidden || !strings.Contains(forged.Body.String(), "页面已过期") || !strings.Contains(forged.Body.String(), `type="password"`) {
+		t.Fatalf("forged login = %d: %s", forged.Code, forged.Body.String())
+	}
+	wrongPassword := request(t, s, http.MethodPost, "/login", central,
+		url.Values{"binding": {"app-public"}, "password": {"wrong password"}, "csrf": {csrf.Value}}, []*http.Cookie{csrf}, "")
+	if wrongPassword.Code != http.StatusOK || !strings.Contains(wrongPassword.Body.String(), "密码不正确，请重试") || !strings.Contains(wrongPassword.Body.String(), `type="password"`) {
+		t.Fatalf("wrong password page = %d: %s", wrongPassword.Code, wrongPassword.Body.String())
+	}
+	login := request(t, s, http.MethodPost, "/login", central,
+		url.Values{"binding": {"app-public"}, "password": {"correct horse battery staple"}, "csrf": {csrf.Value}}, []*http.Cookie{csrf}, "")
 	if login.Code != http.StatusSeeOther || login.Header().Get("Location") != "/duration" {
 		t.Fatalf("login response = %d, %s", login.Code, login.Header().Get("Location"))
 	}
 	stage := findCookie(t, login, stageCookie)
-	duration := request(t, s, http.MethodPost, "/duration", central, url.Values{"duration": {"2h"}, "session_only": {"1"}}, []*http.Cookie{stage}, "https://"+central)
+	durationPage := request(t, s, http.MethodGet, "/duration", central, nil, []*http.Cookie{stage, csrf}, "")
+	if durationPage.Code != http.StatusOK || !strings.Contains(durationPage.Body.String(), `name="csrf"`) {
+		t.Fatalf("duration page = %d", durationPage.Code)
+	}
+	invalidDuration := request(t, s, http.MethodPost, "/duration", central,
+		url.Values{"duration": {"2h"}}, []*http.Cookie{stage, csrf}, "")
+	if invalidDuration.Code != http.StatusForbidden || !strings.Contains(invalidDuration.Body.String(), "页面已过期") {
+		t.Fatalf("invalid duration = %d: %s", invalidDuration.Code, invalidDuration.Body.String())
+	}
+	duration := request(t, s, http.MethodPost, "/duration", central,
+		url.Values{"duration": {"2h"}, "session_only": {"1"}, "csrf": {csrf.Value}}, []*http.Cookie{stage, csrf}, "")
 	if duration.Code != http.StatusSeeOther {
 		t.Fatalf("duration response = %d: %s", duration.Code, duration.Body.String())
 	}
@@ -80,11 +105,17 @@ func TestLoginDurationCheckAndLogout(t *testing.T) {
 		t.Fatalf("expired session check = %d", check.Code)
 	}
 	restarted.now = time.Now
-	page := request(t, restarted, http.MethodGet, "/logout", central, nil, []*http.Cookie{browser}, "")
+	page := request(t, restarted, http.MethodGet, "/logout", central, nil, []*http.Cookie{browser, csrf}, "")
 	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "app.example.test") {
 		t.Fatalf("logout page = %d: %s", page.Code, page.Body.String())
 	}
-	logout := request(t, restarted, http.MethodPost, "/logout", central, url.Values{}, []*http.Cookie{browser}, "https://"+central)
+	invalidLogout := request(t, restarted, http.MethodPost, "/logout", central,
+		url.Values{}, []*http.Cookie{browser, csrf}, "")
+	if invalidLogout.Code != http.StatusForbidden || !strings.Contains(invalidLogout.Body.String(), "页面已过期") {
+		t.Fatalf("invalid logout = %d: %s", invalidLogout.Code, invalidLogout.Body.String())
+	}
+	logout := request(t, restarted, http.MethodPost, "/logout", central,
+		url.Values{"csrf": {csrf.Value}}, []*http.Cookie{browser, csrf}, "")
 	if logout.Code != http.StatusOK {
 		t.Fatalf("logout response = %d", logout.Code)
 	}
@@ -118,10 +149,11 @@ func TestPasswordsAndLogoutArePerBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	central := "auth.example.test"
-	origin := "https://" + central
+	loginPage := request(t, server, http.MethodGet, "/login?binding=second", central, nil, nil, "")
+	csrf := findCookie(t, loginPage, csrfCookie)
 	wrong := request(t, server, http.MethodPost, "/login", central,
-		url.Values{"binding": {"second"}, "password": {"first site secret passphrase"}}, nil, origin)
-	if wrong.Code != http.StatusOK || strings.Contains(wrong.Header().Get("Set-Cookie"), stageCookie) {
+		url.Values{"binding": {"second"}, "password": {"first site secret passphrase"}, "csrf": {csrf.Value}}, []*http.Cookie{csrf}, "")
+	if wrong.Code != http.StatusOK || strings.Contains(wrong.Header().Get("Set-Cookie"), stageCookie) || !strings.Contains(wrong.Body.String(), "密码不正确") {
 		t.Fatalf("other site's password accepted: %d %#v", wrong.Code, wrong.Header())
 	}
 	var browser *http.Cookie
@@ -130,17 +162,17 @@ func TestPasswordsAndLogoutArePerBinding(t *testing.T) {
 		{"first", "first.example.test", "first site secret passphrase"},
 		{"second", "second.example.test", "second site secret passphrase"},
 	} {
-		var cookies []*http.Cookie
+		cookies := []*http.Cookie{csrf}
 		if browser != nil {
-			cookies = []*http.Cookie{browser}
+			cookies = append(cookies, browser)
 		}
 		login := request(t, server, http.MethodPost, "/login", central,
-			url.Values{"binding": {binding.name}, "password": {binding.password}}, cookies, origin)
+			url.Values{"binding": {binding.name}, "password": {binding.password}, "csrf": {csrf.Value}}, cookies, "")
 		if login.Code != http.StatusSeeOther {
 			t.Fatalf("%s login = %d", binding.name, login.Code)
 		}
 		duration := request(t, server, http.MethodPost, "/duration", central,
-			url.Values{"duration": {"1d"}}, []*http.Cookie{findCookie(t, login, stageCookie)}, origin)
+			url.Values{"duration": {"1d"}, "csrf": {csrf.Value}}, []*http.Cookie{findCookie(t, login, stageCookie), csrf}, "")
 		if duration.Code != http.StatusSeeOther {
 			t.Fatalf("%s duration = %d", binding.name, duration.Code)
 		}
@@ -162,7 +194,7 @@ func TestPasswordsAndLogoutArePerBinding(t *testing.T) {
 		}
 	}
 	logout := request(t, server, http.MethodPost, "/logout", central,
-		url.Values{"binding": {"first"}}, []*http.Cookie{browser}, origin)
+		url.Values{"binding": {"first"}, "csrf": {csrf.Value}}, []*http.Cookie{browser, csrf}, "")
 	if logout.Code != http.StatusOK || !strings.Contains(logout.Body.String(), "second.example.test") || strings.Contains(logout.Body.String(), "first.example.test") {
 		t.Fatalf("single-site logout = %d: %s", logout.Code, logout.Body.String())
 	}

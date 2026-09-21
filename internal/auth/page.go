@@ -16,8 +16,9 @@ type sessionView struct {
 	Expires  string
 }
 
-func renderPage(w http.ResponseWriter, title, content string) {
+func renderPageStatus(w http.ResponseWriter, status int, title, content string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>%s · Lantern</title><style>
@@ -33,21 +34,26 @@ button,.button{appearance:none;display:inline-flex;align-items:center;justify-co
 </style></head><body><main><div class="mark">✦</div>%s<div class="footer">Lantern · 安全连接</div></main></body></html>`, html.EscapeString(title), content)
 }
 
-func loginPage(binding model.Binding, message string) string {
+func loginPage(binding model.Binding, message, csrfToken string) string {
 	var b strings.Builder
 	b.WriteString("<h1>验证身份</h1><p>输入此网站的访问密码，继续安全访问。</p>")
 	fmt.Fprintf(&b, "<div class=\"host\">%s</div>", html.EscapeString(binding.Hostname))
 	if message != "" {
-		fmt.Fprintf(&b, "<p class=\"notice\">%s</p>", html.EscapeString(message))
+		fmt.Fprintf(&b, "<p class=\"notice\" role=\"alert\">%s</p>", html.EscapeString(message))
 	}
-	fmt.Fprintf(&b, `<form method="post" action="/login"><input type="hidden" name="binding" value="%s"><label for="password">访问密码</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus maxlength="1024"><button class="primary" type="submit">继续</button></form>`, html.EscapeString(binding.Name))
+	fmt.Fprintf(&b, `<form method="post" action="/login"><input type="hidden" name="binding" value="%s">%s<label for="password">访问密码</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus maxlength="1024"><button class="primary" type="submit">继续</button></form>`, html.EscapeString(binding.Name), csrfField(csrfToken))
 	return b.String()
 }
 
-func durationPage(binding model.Binding) string {
+func durationPage(binding model.Binding, csrfToken, message string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<h1>选择有效期</h1><p>密码已验证。为 %s 选择本次访问的有效时间。</p>", html.EscapeString(binding.Hostname))
-	b.WriteString(`<form method="post" action="/duration"><div class="options">`)
+	if message != "" {
+		fmt.Fprintf(&b, "<p class=\"notice\" role=\"alert\">%s</p>", html.EscapeString(message))
+	}
+	b.WriteString(`<form method="post" action="/duration">`)
+	b.WriteString(csrfField(csrfToken))
+	b.WriteString(`<div class="options">`)
 	for _, option := range []struct{ value, label string }{
 		{"2h", "2 小时"}, {"12h", "12 小时"}, {"1d", "1 天"}, {"7d", "1 周"},
 		{"30d", "1 个月"}, {"90d", "3 个月"}, {"forever", "永久"},
@@ -63,21 +69,28 @@ func durationPage(binding model.Binding) string {
 	return b.String()
 }
 
-func logoutPage(sessions []sessionView, done bool) string {
+func logoutPage(sessions []sessionView, done bool, csrfToken, message string) string {
 	var b strings.Builder
 	if done {
 		b.WriteString("<h1>已退出</h1><p>选中的访问凭据已在服务端失效。</p>")
 	} else {
 		b.WriteString("<h1>管理登录</h1><p>在这里退出单个网站，或一次退出本浏览器登录过的所有网站。</p>")
 	}
+	if message != "" {
+		fmt.Fprintf(&b, "<p class=\"notice\" role=\"alert\">%s</p>", html.EscapeString(message))
+	}
 	if len(sessions) == 0 {
 		b.WriteString(`<div class="empty">当前没有有效的受保护网站会话。</div>`)
 		return b.String()
 	}
 	for _, value := range sessions {
-		fmt.Fprintf(&b, `<div class="session"><strong>%s</strong><small>%s · 有效至 %s</small><form method="post" action="/logout"><input type="hidden" name="binding" value="%s"><button class="secondary" type="submit">退出此网站</button></form></div>`,
-			html.EscapeString(value.Hostname), html.EscapeString(value.URL), html.EscapeString(value.Expires), html.EscapeString(value.Binding))
+		fmt.Fprintf(&b, `<div class="session"><strong>%s</strong><small>%s · 有效至 %s</small><form method="post" action="/logout"><input type="hidden" name="binding" value="%s">%s<button class="secondary" type="submit">退出此网站</button></form></div>`,
+			html.EscapeString(value.Hostname), html.EscapeString(value.URL), html.EscapeString(value.Expires), html.EscapeString(value.Binding), csrfField(csrfToken))
 	}
-	b.WriteString(`<form method="post" action="/logout"><button class="primary" type="submit">退出所有网站</button></form>`)
+	fmt.Fprintf(&b, `<form method="post" action="/logout">%s<button class="primary" type="submit">退出所有网站</button></form>`, csrfField(csrfToken))
 	return b.String()
+}
+
+func csrfField(token string) string {
+	return `<input type="hidden" name="csrf" value="` + html.EscapeString(token) + `">`
 }

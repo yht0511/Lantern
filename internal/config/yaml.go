@@ -208,9 +208,9 @@ func splitKeyValue(tok yamlToken) (string, string, bool, error) {
 	if !ok {
 		return "", "", false, fmt.Errorf("line %d: expected key: value", tok.Line)
 	}
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return "", "", false, fmt.Errorf("line %d: empty key", tok.Line)
+	key, err := parseMappingKey(strings.TrimSpace(key))
+	if err != nil {
+		return "", "", false, fmt.Errorf("line %d: %w", tok.Line, err)
 	}
 	raw = strings.TrimSpace(raw)
 	return key, raw, raw != "", nil
@@ -221,12 +221,34 @@ func splitInlineKeyValue(tok yamlToken) (string, string, bool, error) {
 	if !ok {
 		return "", "", false, fmt.Errorf("line %d: expected key: value", tok.Line)
 	}
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return "", "", false, fmt.Errorf("line %d: empty key", tok.Line)
+	key, err := parseMappingKey(strings.TrimSpace(key))
+	if err != nil {
+		return "", "", false, fmt.Errorf("line %d: %w", tok.Line, err)
 	}
 	raw = strings.TrimSpace(raw)
 	return key, raw, raw != "", nil
+}
+
+func parseMappingKey(key string) (string, error) {
+	if key == "" {
+		return "", fmt.Errorf("empty key")
+	}
+	if strings.HasPrefix(key, `"`) {
+		value, err := strconv.Unquote(key)
+		if err != nil {
+			return "", fmt.Errorf("invalid quoted key: %w", err)
+		}
+		key = value
+	} else if strings.HasPrefix(key, `'`) {
+		if !strings.HasSuffix(key, `'`) || len(key) < 2 {
+			return "", fmt.Errorf("invalid quoted key")
+		}
+		key = strings.ReplaceAll(key[1:len(key)-1], "''", "'")
+	}
+	if key == "" {
+		return "", fmt.Errorf("empty key")
+	}
+	return key, nil
 }
 
 func splitColon(s string) (string, string, bool) {

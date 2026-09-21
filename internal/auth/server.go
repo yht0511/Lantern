@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 const siteCookie = "__Host-lantern_session"
 const browserCookie = "__Host-lantern_browser"
 const stageCookie = "__Host-lantern_stage"
+const csrfCookie = "__Host-lantern_csrf"
 const maxCookieAge = 400 * 24 * time.Hour
 
 type stage struct {
@@ -198,12 +200,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		renderPage(w, "登录", loginPage(binding, ""))
+		s.renderLogin(w, r, binding, "", http.StatusOK)
 	case http.MethodPost:
-		if !s.validOrigin(r) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "invalid form", http.StatusBadRequest)
 			return
@@ -213,21 +211,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		if !validCSRF(r) {
+			s.renderLogin(w, r, binding, "页面已过期，请重新输入密码。", http.StatusForbidden)
+			return
+		}
 		key := s.clientIP(r) + "|" + binding.Name
 		if !s.allowAttempt(key) {
-			http.Error(w, "too many attempts; try again later", http.StatusTooManyRequests)
+			s.renderLogin(w, r, binding, "尝试次数过多，请稍后再试。", http.StatusTooManyRequests)
 			return
 		}
 		select {
 		case s.verifyGate <- struct{}{}:
 			defer func() { <-s.verifyGate }()
 		default:
-			http.Error(w, "server busy; try again shortly", http.StatusServiceUnavailable)
+			s.renderLogin(w, r, binding, "服务暂时繁忙，请稍后再试。", http.StatusServiceUnavailable)
 			return
 		}
 		if !VerifyPassword(s.secrets.AuthPasswords[binding.AuthRef], r.PostForm.Get("password")) {
 			s.failAttempt(key)
-			renderPage(w, "登录", loginPage(binding, "密码不正确，请重试。"))
+			s.renderLogin(w, r, binding, "密码不正确，请重试。", http.StatusOK)
 			return
 		}
 		s.clearAttempt(key)
@@ -268,19 +270,19 @@ func (s *Server) duration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		renderPage(w, "选择有效期", durationPage(s.bindings[challenge.binding]))
+		s.renderDuration(w, r, s.bindings[challenge.binding], "", http.StatusOK)
 		return
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.validOrigin(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if !validCSRF(r) {
+		s.renderDuration(w, r, s.bindings[challenge.binding], "页面已过期，请重新选择有效期。", http.StatusForbidden)
 		return
 	}
 	lifetime, ok := durations[r.PostForm.Get("duration")]
@@ -319,23 +321,23 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	browserToken := cookieValue(r, browserCookie)
 	if r.Method == http.MethodGet {
-		renderPage(w, "退出登录", logoutPage(s.visibleSessions(browserToken), false))
+		s.renderLogout(w, r, s.visibleSessions(browserToken), false, "", http.StatusOK)
 		return
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.validOrigin(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if !validCSRF(r) {
+		s.renderLogout(w, r, s.visibleSessions(browserToken), false, "页面已过期，请重试。", http.StatusForbidden)
 		return
 	}
 	if !validToken(browserToken) {
-		http.Error(w, "no browser session", http.StatusUnauthorized)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
+		s.renderLogout(w, r, nil, false, "当前浏览器没有有效会话。", http.StatusUnauthorized)
 		return
 	}
 	binding := r.PostForm.Get("binding")
@@ -359,7 +361,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if binding == "" {
 		clearCookie(w, browserCookie)
 	}
-	renderPage(w, "已退出", logoutPage(s.visibleSessions(browserToken), true))
+	s.renderLogout(w, r, s.visibleSessions(browserToken), true, "", http.StatusOK)
 }
 
 func (s *Server) home(w http.ResponseWriter, r *http.Request) {
@@ -379,8 +381,51 @@ func (s *Server) centralHost(r *http.Request) bool {
 	return strings.EqualFold(requestHostname(r.Host), s.publicURL.Hostname())
 }
 
-func (s *Server) validOrigin(r *http.Request) bool {
-	return r.Header.Get("Origin") == s.publicURL.Scheme+"://"+s.publicURL.Host
+func (s *Server) formToken(w http.ResponseWriter, r *http.Request) (string, error) {
+	token := cookieValue(r, csrfCookie)
+	if validToken(token) {
+		return token, nil
+	}
+	token, err := randomToken()
+	if err != nil {
+		return "", err
+	}
+	setCookie(w, csrfCookie, token, 0)
+	return token, nil
+}
+
+func validCSRF(r *http.Request) bool {
+	formToken := r.PostForm.Get("csrf")
+	cookieToken := cookieValue(r, csrfCookie)
+	return validToken(formToken) && validToken(cookieToken) &&
+		subtle.ConstantTimeCompare([]byte(formToken), []byte(cookieToken)) == 1
+}
+
+func (s *Server) renderLogin(w http.ResponseWriter, r *http.Request, binding model.Binding, message string, status int) {
+	token, err := s.formToken(w, r)
+	if err != nil {
+		http.Error(w, "temporary error", http.StatusInternalServerError)
+		return
+	}
+	renderPageStatus(w, status, "登录", loginPage(binding, message, token))
+}
+
+func (s *Server) renderDuration(w http.ResponseWriter, r *http.Request, binding model.Binding, message string, status int) {
+	token, err := s.formToken(w, r)
+	if err != nil {
+		http.Error(w, "temporary error", http.StatusInternalServerError)
+		return
+	}
+	renderPageStatus(w, status, "选择有效期", durationPage(binding, token, message))
+}
+
+func (s *Server) renderLogout(w http.ResponseWriter, r *http.Request, sessions []sessionView, done bool, message string, status int) {
+	token, err := s.formToken(w, r)
+	if err != nil {
+		http.Error(w, "temporary error", http.StatusInternalServerError)
+		return
+	}
+	renderPageStatus(w, status, "退出登录", logoutPage(sessions, done, token, message))
 }
 
 func (s *Server) siteURL(binding model.Binding) *url.URL {

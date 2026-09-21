@@ -94,6 +94,16 @@ func TestAuthConfigAndSecretsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestQuotedAuthPasswordKey(t *testing.T) {
+	root, err := parseYAML([]byte("auth_passwords:\n  \"pve-lan\": \"$argon2id$example\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeSecrets(root).AuthPasswords["pve-lan"]; got != "$argon2id$example" {
+		t.Fatalf("quoted auth key was not decoded: %q", got)
+	}
+}
+
 func TestSaveSecretsReplacesInsecureFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.yaml")
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
