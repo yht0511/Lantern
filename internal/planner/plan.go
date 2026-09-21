@@ -3,7 +3,10 @@ package planner
 import (
 	"fmt"
 	"net"
+	"net/url"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"lantern/internal/model"
@@ -86,6 +89,29 @@ func (b *builder) validateSettings() {
 	}
 	if b.cfg.Settings.ACME.Provider == "acme.sh" && b.cfg.Settings.ACME.ACMEShPath == "" {
 		b.diag(SeverityError, "settings.acme.acme_sh_path is required for acme.sh")
+	}
+	hasAuth := false
+	for _, binding := range b.cfg.Bindings {
+		if !binding.Disabled && binding.AuthRef != "" {
+			hasAuth = true
+		}
+	}
+	if hasAuth || b.cfg.Settings.Auth.PublicURL != "" {
+		publicURL, err := url.Parse(b.cfg.Settings.Auth.PublicURL)
+		if err != nil || publicURL.Scheme != "https" || publicURL.Host == "" || publicURL.Path != "" || publicURL.RawQuery != "" || publicURL.Fragment != "" || publicURL.User != nil || strings.ContainsAny(b.cfg.Settings.Auth.PublicURL, " \t\r\n") {
+			b.diag(SeverityError, "settings.auth.public_url must be an HTTPS origin without a path")
+		}
+		host, portText, err := net.SplitHostPort(b.cfg.Settings.Auth.Listen)
+		port, portErr := strconv.Atoi(portText)
+		if err != nil || portErr != nil || port < 1 || port > 65535 || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+			b.diag(SeverityError, "settings.auth.listen must use a loopback IP and port")
+		}
+		if !filepath.IsAbs(b.cfg.Settings.Auth.SessionFile) {
+			b.diag(SeverityError, "settings.auth.session_file must be an absolute path")
+		}
+		if !filepath.IsAbs(b.cfg.Settings.Auth.BinaryPath) {
+			b.diag(SeverityError, "settings.auth.binary_path must be an absolute path")
+		}
 	}
 }
 
@@ -216,6 +242,26 @@ func (b *builder) validateBindings() {
 				b.diag(SeverityError, "hostname %q is used by both %q and %q", binding.Hostname, other, binding.Name)
 			}
 			hosts[binding.Hostname] = binding.Name
+		}
+		if binding.AuthRef != "" {
+			for _, char := range binding.AuthRef {
+				if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-') {
+					b.diag(SeverityError, "binding %q has invalid auth_ref %q; use letters, digits, underscores or hyphens", binding.Name, binding.AuthRef)
+					break
+				}
+			}
+			if service.Protocol != "http" && service.Protocol != "https" {
+				b.diag(SeverityError, "binding %q can only use auth with HTTP(S) services", binding.Name)
+			}
+			if !binding.SSL {
+				b.diag(SeverityError, "binding %q requires ssl=true for auth", binding.Name)
+			}
+			if strings.ContainsAny(binding.Name, " \t\r\n;?&%#\"'\\") {
+				b.diag(SeverityError, "binding %q has characters unsupported by auth URLs", binding.Name)
+			}
+			if publicURL, err := url.Parse(b.cfg.Settings.Auth.PublicURL); err == nil && strings.EqualFold(binding.Hostname, publicURL.Hostname()) {
+				b.diag(SeverityError, "binding %q cannot protect the auth service itself", binding.Name)
+			}
 		}
 		if service.Protocol == "tcp" || service.Protocol == "udp" {
 			if binding.ExternalPort == 0 && exit.Type == "frp" {

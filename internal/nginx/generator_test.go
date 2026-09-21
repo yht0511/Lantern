@@ -48,3 +48,36 @@ func TestGenerateWebsocketMap(t *testing.T) {
 		t.Fatalf("missing websocket config: map=%v upgrade=%v files=%#v", hasMap, hasUpgradeHeader, files)
 	}
 }
+
+func TestGenerateAuthOnlyForProtectedBinding(t *testing.T) {
+	cfg := model.ExampleConfig()
+	cfg.Settings.Auth.PublicURL = "https://auth.example.test:10043"
+	cfg.Bindings[0].AuthRef = "first_password"
+	cfg.Services[0].Options.Websocket = true
+	files, err := Generate(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var protected, open int
+	for _, body := range files {
+		if !strings.Contains(body, "server_name ") {
+			continue
+		}
+		if strings.Contains(body, "# binding: "+cfg.Bindings[0].Name+" ->") {
+			protected++
+			for _, text := range []string{"auth_request /__lantern/check;", "location = /__lantern/consume", "location @lantern_login", "proxy_set_header X-Lantern-Binding", "proxy_set_header Upgrade"} {
+				if !strings.Contains(body, text) {
+					t.Fatalf("protected binding missing %q: %s", text, body)
+				}
+			}
+		} else {
+			open++
+			if strings.Contains(body, "auth_request /__lantern/check;") {
+				t.Fatalf("unprotected binding has auth_request: %s", body)
+			}
+		}
+	}
+	if protected != 1 || open == 0 {
+		t.Fatalf("protected=%d open=%d", protected, open)
+	}
+}

@@ -11,6 +11,7 @@ import (
 
 	"lantern/internal/acme"
 	"lantern/internal/apply"
+	"lantern/internal/auth"
 	"lantern/internal/config"
 	"lantern/internal/dns"
 	"lantern/internal/frp"
@@ -18,6 +19,8 @@ import (
 	"lantern/internal/nginx"
 	"lantern/internal/planner"
 	"lantern/internal/tui"
+
+	"golang.org/x/term"
 )
 
 func main() {
@@ -86,7 +89,7 @@ func run(ctx context.Context, args []string) error {
 		syncDNS := fs.Bool("dns", false, "sync Cloudflare DNS records before writing local config")
 		forceDNS := fs.Bool("force-dns", false, "update conflicting single DNS records during sync")
 		renewCerts := fs.Bool("certs", false, "renew ACME certificates before reloading nginx")
-		manageSystemd := fs.Bool("systemd", false, "run systemctl daemon-reload and enable/restart generated frpc units")
+		manageSystemd := fs.Bool("systemd", false, "run systemctl daemon-reload and enable/restart generated auth and frpc units")
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
@@ -95,6 +98,7 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return apply.Run(ctx, cfg, secrets, apply.Options{
+			ConfigPath:    *configPath,
 			AssumeYes:     *yes,
 			SkipReload:    *skipReload,
 			SyncDNS:       *syncDNS,
@@ -110,6 +114,8 @@ func run(ctx context.Context, args []string) error {
 		return frpCommand(args)
 	case "cert":
 		return certCommand(ctx, args)
+	case "auth":
+		return authCommand(ctx, args)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -145,6 +151,79 @@ func loadAll(path string) (*model.Config, *model.Secrets, error) {
 		secrets = &model.Secrets{}
 	}
 	return cfg, secrets, nil
+}
+
+func authCommand(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		return errors.New("auth requires subcommand: serve or set-password")
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("auth "+sub, flag.ExitOnError)
+	configPath := fs.String("config", defaultConfigPath(), "config file path")
+	bindingName := fs.String("binding", "", "binding to protect")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	cfg, secrets, err := loadAll(*configPath)
+	if err != nil {
+		return err
+	}
+	switch sub {
+	case "serve":
+		server, err := auth.New(cfg, secrets)
+		if err != nil {
+			return err
+		}
+		return server.Listen(ctx)
+	case "set-password":
+		var binding *model.Binding
+		for i := range cfg.Bindings {
+			if cfg.Bindings[i].Name == *bindingName {
+				binding = &cfg.Bindings[i]
+				break
+			}
+		}
+		if binding == nil || binding.AuthRef == "" {
+			return fmt.Errorf("binding %q does not have auth_ref", *bindingName)
+		}
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return errors.New("set-password requires an interactive terminal")
+		}
+		fmt.Printf("Password for %s: ", binding.Name)
+		first, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return err
+		}
+		fmt.Print("Confirm password: ")
+		second, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return err
+		}
+		if string(first) != string(second) {
+			return errors.New("passwords do not match")
+		}
+		hash, err := auth.HashPassword(string(first))
+		if err != nil {
+			return err
+		}
+		if secrets.AuthPasswords == nil {
+			secrets.AuthPasswords = map[string]string{}
+		}
+		secrets.AuthPasswords[binding.AuthRef] = hash
+		secretsPath := cfg.Settings.SecretsPath
+		if !filepath.IsAbs(secretsPath) {
+			secretsPath = filepath.Join(filepath.Dir(*configPath), secretsPath)
+		}
+		if err := config.SaveSecrets(secretsPath, secrets); err != nil {
+			return err
+		}
+		fmt.Printf("Saved password hash for %s to %s; restart %s if it is running\n", binding.Name, secretsPath, auth.UnitName)
+		return nil
+	default:
+		return fmt.Errorf("unknown auth subcommand %q", sub)
+	}
 }
 
 func render(args []string) error {
@@ -401,6 +480,8 @@ Usage:
   lantern dns plan|sync [--config lantern.yaml] [--yes] [--force]
   lantern frp plan|render|install-script|install [--config lantern.yaml] [--version v0.61.0] [--yes]
   lantern cert plan|issue|renew [--config lantern.yaml] [--yes]
+  lantern auth serve [--config lantern.yaml]
+  lantern auth set-password --binding NAME [--config lantern.yaml]
 `)
 }
 

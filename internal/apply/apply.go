@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"lantern/internal/acme"
+	"lantern/internal/auth"
 	"lantern/internal/dns"
 	"lantern/internal/frp"
 	"lantern/internal/model"
@@ -19,6 +20,7 @@ import (
 )
 
 type Options struct {
+	ConfigPath    string
 	AssumeYes     bool
 	SkipReload    bool
 	SyncDNS       bool
@@ -40,6 +42,14 @@ func Run(ctx context.Context, cfg *model.Config, secrets *model.Secrets, opts Op
 	}
 	if !opts.AssumeYes {
 		return errors.New("apply requires --yes")
+	}
+	for _, binding := range cfg.Bindings {
+		if binding.Disabled || binding.AuthRef == "" {
+			continue
+		}
+		if secrets == nil || secrets.AuthPasswords[binding.AuthRef] == "" {
+			return fmt.Errorf("missing auth password hash %q for binding %s; run lantern auth set-password --binding %s", binding.AuthRef, binding.Name, binding.Name)
+		}
 	}
 	if opts.SyncDNS {
 		fmt.Println("syncing DNS")
@@ -73,6 +83,13 @@ func Run(ctx context.Context, cfg *model.Config, secrets *model.Secrets, opts Op
 	if err != nil {
 		return err
 	}
+	if cfg.Settings.Auth.PublicURL != "" {
+		unitPath, unitBody, err := auth.Unit(cfg, opts.ConfigPath)
+		if err != nil {
+			return err
+		}
+		frpFiles[unitPath] = unitBody
+	}
 	for path, body := range merge(nginxFiles, frpFiles) {
 		if err := writeFile(path, body, 0o644); err != nil {
 			return err
@@ -81,6 +98,17 @@ func Run(ctx context.Context, cfg *model.Config, secrets *model.Secrets, opts Op
 	}
 	if opts.SkipReload {
 		return nil
+	}
+	if opts.ManageSystemd && cfg.Settings.Auth.PublicURL != "" {
+		if err := systemdReload(ctx); err != nil {
+			return err
+		}
+		if err := runCommand(ctx, "systemctl enable --now "+auth.UnitName); err != nil {
+			return err
+		}
+		if err := runCommand(ctx, "systemctl restart "+auth.UnitName); err != nil {
+			return err
+		}
 	}
 	if len(nginxFiles) > 0 {
 		if err := runCommand(ctx, cfg.Settings.Nginx.TestCommand); err != nil {
@@ -91,8 +119,10 @@ func Run(ctx context.Context, cfg *model.Config, secrets *model.Secrets, opts Op
 		}
 	}
 	if opts.ManageSystemd && cfg.Settings.FRP.ManageSystemd {
-		if err := systemdReload(ctx); err != nil {
-			return err
+		if cfg.Settings.Auth.PublicURL == "" {
+			if err := systemdReload(ctx); err != nil {
+				return err
+			}
 		}
 		for _, unit := range frp.DesiredUnitNames(cfg) {
 			if err := runCommand(ctx, "systemctl enable --now "+unit); err != nil {

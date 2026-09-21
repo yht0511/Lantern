@@ -38,6 +38,11 @@ func encodeConfig(cfg *model.Config) string {
 	b.WriteString("  cloudflare:\n")
 	writeBool(&b, 4, "enabled", cfg.Settings.Cloudflare.Enabled)
 	writeKV(&b, 4, "conflict_policy", cfg.Settings.Cloudflare.ConflictPolicy)
+	b.WriteString("  auth:\n")
+	writeKV(&b, 4, "public_url", cfg.Settings.Auth.PublicURL)
+	writeKV(&b, 4, "listen", cfg.Settings.Auth.Listen)
+	writeKV(&b, 4, "session_file", cfg.Settings.Auth.SessionFile)
+	writeKV(&b, 4, "binary_path", cfg.Settings.Auth.BinaryPath)
 
 	b.WriteString("domains:\n")
 	for _, d := range cfg.Domains {
@@ -103,6 +108,7 @@ func encodeConfig(cfg *model.Config) string {
 		writeBool(&b, 4, "proxied", binding.Proxied)
 		writeInt(&b, 4, "external_port", binding.ExternalPort)
 		writeKV(&b, 4, "cert_name", binding.CertName)
+		writeKV(&b, 4, "auth_ref", binding.AuthRef)
 		writeBool(&b, 4, "disabled", binding.Disabled)
 	}
 	return b.String()
@@ -116,6 +122,8 @@ func encodeSecrets(secrets *model.Secrets) string {
 	writeSortedMap(&b, secrets.CloudflareTokens)
 	b.WriteString("frp_tokens:\n")
 	writeSortedMap(&b, secrets.FRPTokens)
+	b.WriteString("auth_passwords:\n")
+	writeSortedMap(&b, secrets.AuthPasswords)
 	return b.String()
 }
 

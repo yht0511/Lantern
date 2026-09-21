@@ -2,6 +2,7 @@ package nginx
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -83,6 +84,10 @@ func renderServer(cfg *model.Config, service model.Service, binding model.Bindin
 		fmt.Fprintf(&b, "    client_max_body_size %s;\n\n", service.Options.ClientMaxBodySize)
 	}
 	fmt.Fprintf(&b, "    location / {\n")
+	if binding.AuthRef != "" {
+		fmt.Fprintf(&b, "        auth_request /__lantern/check;\n")
+		fmt.Fprintf(&b, "        error_page 401 = @lantern_login;\n\n")
+	}
 	fmt.Fprintf(&b, "        proxy_pass %s://%s:%d;\n\n", service.Protocol, service.Host, service.Port)
 	fmt.Fprintf(&b, "        proxy_http_version 1.1;\n")
 	if service.Options.Websocket {
@@ -121,6 +126,21 @@ func renderServer(cfg *model.Config, service model.Service, binding model.Bindin
 	fmt.Fprintf(&b, "        proxy_read_timeout %s;\n", service.Options.ReadTimeout)
 	fmt.Fprintf(&b, "        send_timeout %s;\n", service.Options.SendTimeout)
 	fmt.Fprintf(&b, "    }\n")
+	if binding.AuthRef != "" {
+		fmt.Fprintf(&b, "\n    location = /__lantern/check {\n")
+		fmt.Fprintf(&b, "        internal;\n        proxy_pass http://%s/check;\n", cfg.Settings.Auth.Listen)
+		fmt.Fprintf(&b, "        proxy_method GET;\n        proxy_pass_request_body off;\n        proxy_set_header Content-Length \"\";\n")
+		fmt.Fprintf(&b, "        proxy_set_header Host $host;\n        proxy_set_header Cookie $http_cookie;\n")
+		fmt.Fprintf(&b, "        proxy_set_header X-Lantern-Binding %q;\n    }\n", binding.Name)
+		fmt.Fprintf(&b, "\n    location = /__lantern/consume {\n")
+		fmt.Fprintf(&b, "        access_log off;\n")
+		fmt.Fprintf(&b, "        proxy_pass http://%s/consume;\n", cfg.Settings.Auth.Listen)
+		fmt.Fprintf(&b, "        proxy_set_header Host $host;\n        proxy_set_header X-Lantern-Binding %q;\n    }\n", binding.Name)
+		fmt.Fprintf(&b, "\n    location = /__lantern/account {\n        return 302 %s/logout;\n    }\n", cfg.Settings.Auth.PublicURL)
+		fmt.Fprintf(&b, "\n    location ^~ /__lantern/ { return 404; }\n")
+		fmt.Fprintf(&b, "\n    location @lantern_login {\n        return 302 %s/login?binding=%s;\n    }\n",
+			cfg.Settings.Auth.PublicURL, url.QueryEscape(binding.Name))
+	}
 	fmt.Fprintf(&b, "}\n")
 	return b.String()
 }

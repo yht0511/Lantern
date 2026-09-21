@@ -72,7 +72,65 @@ go run ./cmd/lantern apply --config lantern.yaml --yes --systemd
 - `--dns` syncs Cloudflare DNS.
 - `--force-dns` updates a single existing DNS record when its content differs.
 - `--certs` runs `lego renew` with Cloudflare DNS-01.
-- `--systemd` enables and restarts generated frpc units only when `settings.frp.manage_systemd` is true.
+- `--systemd` enables and restarts the auth unit when configured, plus generated frpc units when `settings.frp.manage_systemd` is true.
+
+## Password protected websites
+
+Lantern can protect individual HTTP/HTTPS bindings, including WebSocket upgrade
+requests. Other bindings remain open. Set a distinct `auth_ref` on each binding
+you want to protect; leave it empty to disable gateway authentication:
+
+```yaml
+settings:
+  auth:
+    public_url: https://auth.site-2.teclab.org.cn:10043
+    listen: 127.0.0.1:9183
+    session_file: /var/lib/lantern/auth-sessions.json
+    binary_path: /usr/local/bin/lantern
+
+bindings:
+  - name: pve-lan
+    # ...the existing binding fields...
+    auth_ref: pve_lan_password
+```
+
+The public URL must route through Nginx to the local auth listener as an
+**unprotected** HTTP service and binding. `lantern.yaml` includes this gateway
+service for the site-2 deployment. It uses the existing `*.site-2` certificate.
+Keep the listener bound to loopback and prevent direct public access to each
+backend; otherwise clients can bypass the gateway.
+
+Build and install a stable executable on the gateway host. After adding
+`auth_ref` to a binding, set its password interactively on the host that holds
+`secrets.yaml`, then apply the configuration:
+
+```bash
+go build -o lantern ./cmd/lantern
+sudo install -m 0755 lantern /usr/local/bin/lantern
+sudo /usr/local/bin/lantern auth set-password --config lantern.yaml --binding pve-lan
+sudo /usr/local/bin/lantern apply --config lantern.yaml --yes --dns --systemd
+```
+
+This saves an Argon2id password hash in `auth_passwords` inside the configured
+secrets file. Passwords are never stored in `lantern.yaml`. Changing a password
+invalidates existing sessions for bindings using its `auth_ref`; restart the
+auth service to load the new hash. Passwords must have at least 12 characters.
+
+`--systemd` enables and restarts `lantern-auth.service` when
+`settings.auth.public_url` is configured. The login flow is: password, then
+credential lifetime (2 or 12 hours; 1, 7, 30, or 90 days; or no server-side
+expiry). The "browser session only" option creates a session cookie without a
+persistent browser expiration while keeping the selected server-side lifetime.
+Browser session restore may preserve session cookies. Long-lived cookies may
+also be removed by the browser, even when the server-side session has no expiry.
+
+The central logout page is
+`https://auth.site-2.teclab.org.cn:10043/logout`. It lists this browser's
+active protected-site sessions and can revoke one site or all sites. A protected
+site also redirects `/__lantern/account` to that page. This is a top-level
+navigation, so the portal does not need CORS or access to HttpOnly cookies.
+Logout blocks new requests and new WebSocket handshakes. Existing WebSocket
+connections stay open until the application or transport closes them.
 
 ## DNS
 

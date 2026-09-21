@@ -354,7 +354,7 @@ func (a *app) rowsForSection() []string {
 		}
 		return out
 	case 4:
-		return []string{"General", "Nginx", "ACME", "FRP", "Cloudflare"}
+		return []string{"General", "Nginx", "ACME", "FRP", "Cloudflare", "Auth"}
 	default:
 		return nil
 	}
@@ -398,8 +398,8 @@ func (a *app) detailLine(idx int) string {
 			return ""
 		}
 		b := a.cfg.Bindings[idx]
-		return fmt.Sprintf("service=%s exit=%s ssl=%v proxied=%v external_port=%d cert=%s",
-			b.Service, b.Exit, b.SSL, b.Proxied, b.ExternalPort, b.CertName)
+		return fmt.Sprintf("service=%s exit=%s ssl=%v proxied=%v external_port=%d cert=%s auth_ref=%s",
+			b.Service, b.Exit, b.SSL, b.Proxied, b.ExternalPort, b.CertName, b.AuthRef)
 	case 4:
 		return a.settingsDetail(idx)
 	default:
@@ -419,6 +419,8 @@ func (a *app) settingsDetail(idx int) string {
 		return fmt.Sprintf("enabled=%v install=%s config=%s systemd=%s manage=%v", a.cfg.Settings.FRP.Enabled, a.cfg.Settings.FRP.InstallDir, a.cfg.Settings.FRP.ConfigDir, a.cfg.Settings.FRP.SystemdDir, a.cfg.Settings.FRP.ManageSystemd)
 	case 4:
 		return fmt.Sprintf("enabled=%v conflict_policy=%s", a.cfg.Settings.Cloudflare.Enabled, a.cfg.Settings.Cloudflare.ConflictPolicy)
+	case 5:
+		return fmt.Sprintf("public_url=%s listen=%s session_file=%s", a.cfg.Settings.Auth.PublicURL, a.cfg.Settings.Auth.Listen, a.cfg.Settings.Auth.SessionFile)
 	default:
 		return ""
 	}
@@ -635,6 +637,7 @@ func (a *app) editBinding(idx int) {
 		boolField("SSL", b.SSL),
 		boolField("Cloudflare orange cloud", b.Proxied),
 		textField("Certificate name", b.CertName),
+		textField("Auth password ref (empty = off)", b.AuthRef),
 		boolField("Disabled", b.Disabled),
 	}
 	hasExternalPort := service.Protocol == "tcp" || service.Protocol == "udp"
@@ -651,11 +654,13 @@ func (a *app) editBinding(idx int) {
 		if hasExternalPort {
 			b.ExternalPort = atoiDefault(fields[6].value, b.ExternalPort)
 			b.CertName = fields[7].value
-			b.Disabled = parseBool(fields[8].value)
+			b.AuthRef = fields[8].value
+			b.Disabled = parseBool(fields[9].value)
 		} else {
 			b.ExternalPort = 0
 			b.CertName = fields[6].value
-			b.Disabled = parseBool(fields[7].value)
+			b.AuthRef = fields[7].value
+			b.Disabled = parseBool(fields[8].value)
 		}
 		a.cfg.Bindings[idx] = b
 		a.markDirty("Updated binding " + b.Name)
@@ -737,6 +742,20 @@ func (a *app) editSettings(idx int) {
 			a.cfg.Settings.Cloudflare.Enabled = parseBool(fields[0].value)
 			a.cfg.Settings.Cloudflare.ConflictPolicy = fields[1].value
 			a.markDirty("Updated Cloudflare settings")
+		}
+	case 5:
+		fields := []field{
+			textField("Public URL", a.cfg.Settings.Auth.PublicURL),
+			textField("Listen address", a.cfg.Settings.Auth.Listen),
+			textField("Session file", a.cfg.Settings.Auth.SessionFile),
+			textField("Installed binary path", a.cfg.Settings.Auth.BinaryPath),
+		}
+		if editForm("Auth Settings", fields) {
+			a.cfg.Settings.Auth.PublicURL = fields[0].value
+			a.cfg.Settings.Auth.Listen = fields[1].value
+			a.cfg.Settings.Auth.SessionFile = fields[2].value
+			a.cfg.Settings.Auth.BinaryPath = fields[3].value
+			a.markDirty("Updated auth settings")
 		}
 	}
 	a.cfg.ApplyDefaults()

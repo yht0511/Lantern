@@ -52,7 +52,27 @@ func SaveSecrets(path string, secrets *model.Secrets) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != "." {
 		return err
 	}
-	return os.WriteFile(path, []byte(encodeSecrets(secrets)), 0o600)
+	file, err := os.CreateTemp(filepath.Dir(path), ".lantern-secrets-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return err
+	}
+	if _, err := file.WriteString(encodeSecrets(secrets)); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), path)
 }
 
 func decodeConfig(root map[string]any) (*model.Config, error) {
@@ -141,6 +161,14 @@ func decodeSettings(m map[string]any) model.Settings {
 		s.Cloudflare = model.CloudflareSettings{
 			Enabled:        boolValue(cf["enabled"]),
 			ConflictPolicy: stringValue(cf["conflict_policy"]),
+		}
+	}
+	if auth, ok := mapValue(m["auth"]); ok {
+		s.Auth = model.AuthSettings{
+			PublicURL:   stringValue(auth["public_url"]),
+			Listen:      stringValue(auth["listen"]),
+			SessionFile: stringValue(auth["session_file"]),
+			BinaryPath:  stringValue(auth["binary_path"]),
 		}
 	}
 	return s
@@ -246,6 +274,7 @@ func decodeBinding(m map[string]any) model.Binding {
 		Proxied:      boolValue(m["proxied"]),
 		ExternalPort: intValue(m["external_port"]),
 		CertName:     stringValue(m["cert_name"]),
+		AuthRef:      stringValue(m["auth_ref"]),
 		Disabled:     boolValue(m["disabled"]),
 	}
 }
@@ -255,6 +284,7 @@ func decodeSecrets(root map[string]any) *model.Secrets {
 		CloudflareZones:  map[string]string{},
 		CloudflareTokens: map[string]string{},
 		FRPTokens:        map[string]string{},
+		AuthPasswords:    map[string]string{},
 	}
 	if cf, ok := mapValue(root["cloudflare_zones"]); ok {
 		for k, v := range cf {
@@ -269,6 +299,11 @@ func decodeSecrets(root map[string]any) *model.Secrets {
 	if frp, ok := mapValue(root["frp_tokens"]); ok {
 		for k, v := range frp {
 			secrets.FRPTokens[k] = stringValue(v)
+		}
+	}
+	if auth, ok := mapValue(root["auth_passwords"]); ok {
+		for k, v := range auth {
+			secrets.AuthPasswords[k] = stringValue(v)
 		}
 	}
 	return secrets

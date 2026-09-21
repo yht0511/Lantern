@@ -18,7 +18,15 @@ type Settings struct {
 	ACME           ACMESettings
 	FRP            FRPSettings
 	Cloudflare     CloudflareSettings
+	Auth           AuthSettings
 	GeneratedByTag string
+}
+
+type AuthSettings struct {
+	PublicURL   string
+	Listen      string
+	SessionFile string
+	BinaryPath  string
 }
 
 type NginxSettings struct {
@@ -115,6 +123,7 @@ type Binding struct {
 	Proxied      bool
 	ExternalPort int
 	CertName     string
+	AuthRef      string
 	Disabled     bool
 }
 
@@ -122,6 +131,7 @@ type Secrets struct {
 	CloudflareZones  map[string]string
 	CloudflareTokens map[string]string
 	FRPTokens        map[string]string
+	AuthPasswords    map[string]string
 }
 
 func (c *Config) ApplyDefaults() {
@@ -133,6 +143,15 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Settings.SecretsPath == "" {
 		c.Settings.SecretsPath = "secrets.yaml"
+	}
+	if c.Settings.Auth.Listen == "" {
+		c.Settings.Auth.Listen = "127.0.0.1:9183"
+	}
+	if c.Settings.Auth.SessionFile == "" {
+		c.Settings.Auth.SessionFile = c.Settings.StateDir + "/auth-sessions.json"
+	}
+	if c.Settings.Auth.BinaryPath == "" {
+		c.Settings.Auth.BinaryPath = "/usr/local/bin/lantern"
 	}
 	if c.Settings.Nginx.GeneratedDir == "" {
 		c.Settings.Nginx.GeneratedDir = "/etc/nginx/conf.d/lantern"
