@@ -30,6 +30,31 @@ type Certificate struct {
 	IssueArgs    []string
 }
 
+type CloudflareCredentials struct {
+	Token  string
+	ZoneID string
+}
+
+func CredentialsFor(cert Certificate, secrets *model.Secrets) (CloudflareCredentials, error) {
+	var credentials CloudflareCredentials
+	if secrets != nil {
+		credentials.Token = secrets.CloudflareTokens[cert.TokenRef]
+		if cert.Zone.ZoneRef != "" {
+			credentials.ZoneID = secrets.CloudflareZones[cert.Zone.ZoneRef]
+		}
+	}
+	if credentials.ZoneID == "" {
+		credentials.ZoneID = cert.Zone.ZoneID
+	}
+	if credentials.Token == "" {
+		return credentials, fmt.Errorf("missing Cloudflare token %q for certificate %s", cert.TokenRef, cert.Name)
+	}
+	if cert.Provider == "acme.sh" && credentials.ZoneID == "" {
+		return credentials, fmt.Errorf("missing Cloudflare zone ID for certificate %s (zone_ref %q)", cert.Name, cert.Zone.ZoneRef)
+	}
+	return credentials, nil
+}
+
 func DesiredCertificates(cfg *model.Config) ([]Certificate, []planner.Diagnostic) {
 	cfg.ApplyDefaults()
 	var diagnostics []planner.Diagnostic
@@ -260,34 +285,41 @@ func acmeShRenewArgs(cert Certificate) []string {
 	return args
 }
 
-func ShellCommand(envName, token, binary string, args []string) string {
-	if binary == "" {
-		binary = "lego"
+func ShellCommand(cert Certificate, args []string) string {
+	credentials := CloudflareCredentials{Token: "<redacted>", ZoneID: "<redacted>"}
+	quoted := make([]string, 0, len(args)+3)
+	for _, variable := range providerEnvironment(cert, credentials) {
+		name, value, _ := strings.Cut(variable, "=")
+		quoted = append(quoted, name+"="+shellQuote(value))
 	}
-	quoted := make([]string, 0, len(args)+2)
-	quoted = append(quoted, envName+"="+shellQuote(token), shellQuote(binary))
+	quoted = append(quoted, shellQuote(providerBinary(cert)))
 	for _, arg := range args {
 		quoted = append(quoted, shellQuote(arg))
 	}
 	return strings.Join(quoted, " ")
 }
 
-func RunProvider(ctx context.Context, cert Certificate, token string, args []string) error {
-	binary := "lego"
-	envName := "CLOUDFLARE_DNS_API_TOKEN"
-	if cert.Provider == "acme.sh" {
-		binary = cert.ACMEShPath
-		envName = "CF_Token"
-	}
-	if binary == "" {
-		binary = "lego"
-	}
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Env = append(os.Environ(), envName+"="+token)
+func RunProvider(ctx context.Context, cert Certificate, credentials CloudflareCredentials, args []string) error {
+	cmd := exec.CommandContext(ctx, providerBinary(cert), args...)
+	cmd.Env = append(os.Environ(), providerEnvironment(cert, credentials)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func providerBinary(cert Certificate) string {
+	if cert.Provider == "acme.sh" && cert.ACMEShPath != "" {
+		return cert.ACMEShPath
+	}
+	return "lego"
+}
+
+func providerEnvironment(cert Certificate, credentials CloudflareCredentials) []string {
+	if cert.Provider == "acme.sh" {
+		return []string{"CF_Token=" + credentials.Token, "CF_Zone_ID=" + credentials.ZoneID}
+	}
+	return []string{"CLOUDFLARE_DNS_API_TOKEN=" + credentials.Token}
 }
 
 func RunLego(ctx context.Context, envName, token string, args []string) error {
@@ -323,7 +355,7 @@ func shellQuote(s string) string {
 	if s == "" {
 		return "''"
 	}
-	if !strings.ContainsAny(s, " \t\n'\"$`\\*?[]") {
+	if !strings.ContainsAny(s, " \t\n'\"$`\\*?[]<>&;|(){}") {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"

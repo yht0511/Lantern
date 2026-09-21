@@ -330,23 +330,20 @@ func certCommand(ctx context.Context, args []string) error {
 				if sub == "renew" {
 					args = acme.RenewArgs(cert)
 				}
-				fmt.Println(acme.ShellCommand(acmeEnvName(cert), "<redacted>", acmeBinary(cert), args))
+				fmt.Println(acme.ShellCommand(cert, args))
 			}
 			return nil
 		}
 		for _, cert := range certs {
-			token := ""
-			if secrets.CloudflareTokens != nil {
-				token = secrets.CloudflareTokens[cert.TokenRef]
-			}
-			if token == "" {
-				return fmt.Errorf("missing Cloudflare token %q for certificate %s", cert.TokenRef, cert.Name)
+			credentials, err := acme.CredentialsFor(cert, secrets)
+			if err != nil {
+				return err
 			}
 			args := cert.IssueArgs
 			if sub == "renew" {
 				args = acme.RenewArgs(cert)
 			}
-			if err := acme.RunProvider(ctx, cert, token, args); err != nil {
+			if err := acme.RunProvider(ctx, cert, credentials, args); err != nil {
 				return err
 			}
 		}
@@ -354,20 +351,6 @@ func certCommand(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown cert subcommand %q", sub)
 	}
 	return nil
-}
-
-func acmeEnvName(cert acme.Certificate) string {
-	if cert.Provider == "acme.sh" {
-		return "CF_Token"
-	}
-	return "CLOUDFLARE_DNS_API_TOKEN"
-}
-
-func acmeBinary(cert acme.Certificate) string {
-	if cert.Provider == "acme.sh" {
-		return cert.ACMEShPath
-	}
-	return "lego"
 }
 
 func initConfig(path string, force bool) error {

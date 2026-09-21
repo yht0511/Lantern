@@ -119,15 +119,12 @@ func renewCertificates(ctx context.Context, cfg *model.Config, secrets *model.Se
 		return errors.New("certificate plan has errors")
 	}
 	for _, cert := range certs {
-		token := ""
-		if secrets != nil && secrets.CloudflareTokens != nil {
-			token = secrets.CloudflareTokens[cert.TokenRef]
-		}
-		if token == "" {
-			return fmt.Errorf("missing Cloudflare token %q for certificate %s", cert.TokenRef, cert.Name)
+		credentials, err := acme.CredentialsFor(cert, secrets)
+		if err != nil {
+			return err
 		}
 		fmt.Printf("renewing certificate %s\n", cert.Name)
-		if err := acme.RunProvider(ctx, cert, token, acme.RenewArgs(cert)); err != nil {
+		if err := acme.RunProvider(ctx, cert, credentials, acme.RenewArgs(cert)); err != nil {
 			return err
 		}
 	}
