@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ type stage struct {
 }
 
 type ticket struct {
+	stageID      string
 	binding      string
 	browserToken string
 	siteToken    string
@@ -50,6 +52,7 @@ type Server struct {
 	secrets    *model.Secrets
 	store      *store
 	publicURL  *url.URL
+	csp        string
 	bindings   map[string]model.Binding
 	exits      map[string]model.Exit
 	mu         sync.Mutex
@@ -96,6 +99,23 @@ func New(cfg *model.Config, secrets *model.Secrets) (*Server, error) {
 		}
 		s.bindings[binding.Name] = binding
 	}
+	formOrigins := make(map[string]bool)
+	for _, binding := range s.bindings {
+		if !validCSPHostname(binding.Hostname) {
+			return nil, fmt.Errorf("invalid hostname %q for auth binding %s", binding.Hostname, binding.Name)
+		}
+		formOrigins["https://"+s.siteURL(binding).Host] = true
+	}
+	origins := make([]string, 0, len(formOrigins))
+	for origin := range formOrigins {
+		origins = append(origins, origin)
+	}
+	sort.Strings(origins)
+	s.csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+	if len(origins) > 0 {
+		s.csp += " " + strings.Join(origins, " ")
+	}
+	s.csp += "; frame-ancestors 'none'; base-uri 'none'"
 	return s, nil
 }
 
@@ -130,7 +150,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", s.csp)
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -184,6 +204,14 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not save session", http.StatusInternalServerError)
 		return
 	}
+	s.mu.Lock()
+	delete(s.stages, grant.stageID)
+	for key, other := range s.tickets {
+		if other.stageID == grant.stageID {
+			delete(s.tickets, key)
+		}
+	}
+	s.mu.Unlock()
 	setCookie(w, siteCookie, grant.siteToken, cookieAge(grant.lifetime, grant.sessionOnly))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -301,12 +329,20 @@ func (s *Server) duration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	delete(s.stages, stageID)
-	s.tickets[digest(ticketToken)] = ticket{binding: challenge.binding, browserToken: challenge.browserToken,
+	if current, found := s.stages[stageID]; !found || !s.now().Before(current.expires) {
+		s.mu.Unlock()
+		http.Error(w, "login step expired; please sign in again", http.StatusUnauthorized)
+		return
+	}
+	for key, value := range s.tickets {
+		if value.stageID == stageID {
+			delete(s.tickets, key)
+		}
+	}
+	s.tickets[digest(ticketToken)] = ticket{stageID: stageID, binding: challenge.binding, browserToken: challenge.browserToken,
 		siteToken: siteToken, expires: s.now().Add(time.Minute), lifetime: lifetime,
 		sessionOnly: r.PostForm.Has("session_only")}
 	s.mu.Unlock()
-	clearCookie(w, stageCookie)
 	setCookie(w, browserCookie, challenge.browserToken, maxCookieAge)
 	target := s.siteURL(s.bindings[challenge.binding])
 	target.Path = "/__lantern/consume"
@@ -462,6 +498,19 @@ func requestHostname(host string) string {
 		return value
 	}
 	return host
+}
+
+func validCSPHostname(host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, c := range host {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') &&
+			(c < '0' || c > '9') && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func randomToken() (string, error) {

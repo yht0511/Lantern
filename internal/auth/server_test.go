@@ -22,8 +22,14 @@ func TestLoginDurationCheckAndLogout(t *testing.T) {
 			PublicURL: "https://auth.example.test:10043", SessionFile: filepath.Join(t.TempDir(), "sessions.json"),
 		}},
 		Services: []model.Service{{Name: "app", Protocol: "http", Host: "127.0.0.1", Port: 8080}},
-		Exits:    []model.Exit{{Name: "public", Type: "frp", FRP: model.FRPExit{RemoteHTTPSPort: 10043}}},
-		Bindings: []model.Binding{{Name: "app-public", Service: "app", Exit: "public", Hostname: "app.example.test", SSL: true, AuthRef: "app_password"}},
+		Exits: []model.Exit{
+			{Name: "public", Type: "frp", FRP: model.FRPExit{RemoteHTTPSPort: 10043}},
+			{Name: "lan", Type: "direct"},
+		},
+		Bindings: []model.Binding{
+			{Name: "app-public", Service: "app", Exit: "public", Hostname: "app.example.test", SSL: true, AuthRef: "app_password"},
+			{Name: "app-lan", Service: "app", Exit: "lan", Hostname: "app.lan.example.test", SSL: true, AuthRef: "app_password"},
+		},
 	}
 	secrets := &model.Secrets{AuthPasswords: map[string]string{"app_password": hash}}
 	s, err := New(cfg, secrets)
@@ -60,6 +66,11 @@ func TestLoginDurationCheckAndLogout(t *testing.T) {
 	if durationPage.Code != http.StatusOK || !strings.Contains(durationPage.Body.String(), `name="csrf"`) {
 		t.Fatalf("duration page = %d", durationPage.Code)
 	}
+	policy := durationPage.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "form-action 'self' https://app.example.test:10043 https://app.lan.example.test;") ||
+		strings.Contains(policy, "https://evil.test") {
+		t.Fatalf("duration page CSP does not allow the configured redirect destinations: %q", policy)
+	}
 	invalidDuration := request(t, s, http.MethodPost, "/duration", central,
 		url.Values{"duration": {"2h"}}, []*http.Cookie{stage, csrf}, "")
 	if invalidDuration.Code != http.StatusForbidden || !strings.Contains(invalidDuration.Body.String(), "页面已过期") {
@@ -75,6 +86,19 @@ func TestLoginDurationCheckAndLogout(t *testing.T) {
 	if err != nil || ticketURL.Host != "app.example.test:10043" || !strings.HasPrefix(ticketURL.Path, "/__lantern/consume") {
 		t.Fatalf("ticket redirect = %s, %v", ticketURL, err)
 	}
+	retry := request(t, s, http.MethodPost, "/duration", central,
+		url.Values{"duration": {"2h"}, "session_only": {"1"}, "csrf": {csrf.Value}}, []*http.Cookie{stage, csrf}, "")
+	if retry.Code != http.StatusSeeOther {
+		t.Fatalf("duration retry = %d: %s", retry.Code, retry.Body.String())
+	}
+	stale := requestWithBinding(t, s, http.MethodGet, "/consume?"+ticketURL.RawQuery, target, nil, nil, "", "app-public")
+	if stale.Code != http.StatusUnauthorized {
+		t.Fatalf("replaced ticket = %d", stale.Code)
+	}
+	ticketURL, err = url.Parse(retry.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	wrongHost := requestWithBinding(t, s, http.MethodGet, "/consume?"+ticketURL.RawQuery, "other.example.test", nil, nil, "", "app-public")
 	if wrongHost.Code != http.StatusNotFound {
 		t.Fatalf("wrong host consume = %d", wrongHost.Code)
@@ -82,6 +106,11 @@ func TestLoginDurationCheckAndLogout(t *testing.T) {
 	consume := requestWithBinding(t, s, http.MethodGet, "/consume?"+ticketURL.RawQuery, target, nil, nil, "", "app-public")
 	if consume.Code != http.StatusSeeOther {
 		t.Fatalf("consume response = %d: %s", consume.Code, consume.Body.String())
+	}
+	afterConsume := request(t, s, http.MethodPost, "/duration", central,
+		url.Values{"duration": {"2h"}, "csrf": {csrf.Value}}, []*http.Cookie{stage, csrf}, "")
+	if afterConsume.Code != http.StatusUnauthorized {
+		t.Fatalf("consumed stage retry = %d", afterConsume.Code)
 	}
 	site := findCookie(t, consume, siteCookie)
 	if site.MaxAge != 0 || !site.Secure || !site.HttpOnly {
